@@ -1,0 +1,23 @@
+# Test files (not needed for deployment)
+test-*.html
+debug.html
+simple-test.html
+index-working.html
+
+# Node modules and build artifacts
+node_modules/
+esptool-js-*/
+lib-esptool/
+esptool-bundle.js
+esptool.tar.gz
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
