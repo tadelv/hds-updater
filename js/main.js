@@ -8,7 +8,9 @@ const App = {
     state: {
         firmwareFiles: null,
         connected: false,
-        flashing: false
+        flashing: false,
+        customOffsets: {},
+        advancedMode: false
     },
 
     // Initialize application
@@ -36,7 +38,13 @@ const App = {
             flashBtn: document.getElementById('flash-btn'),
             progressContainer: document.getElementById('progress-container'),
             progressFill: document.getElementById('progress-fill'),
-            console: document.getElementById('console')
+            console: document.getElementById('console'),
+
+            // Advanced options
+            advancedModeCheckbox: document.getElementById('advanced-mode-checkbox'),
+            offsetEditorPanel: document.getElementById('offset-editor-panel'),
+            offsetTableContainer: document.getElementById('offset-table-container'),
+            resetAllOffsetsBtn: document.getElementById('reset-all-offsets-btn')
         };
     },
 
@@ -51,6 +59,10 @@ const App = {
 
         // Flash
         this.elements.flashBtn.addEventListener('click', () => this.onFlash());
+
+        // Advanced options
+        this.elements.advancedModeCheckbox.addEventListener('change', (e) => this.onAdvancedModeToggle(e));
+        this.elements.resetAllOffsetsBtn.addEventListener('click', () => this.onResetAllOffsets());
     },
 
     // Update UI based on state
@@ -87,6 +99,11 @@ const App = {
             this.state.firmwareFiles = files;
             this.log(validation.message, 'success');
             this.updateUI();
+
+            // Re-render offset table if advanced mode is active
+            if (this.state.advancedMode) {
+                this.renderOffsetTable();
+            }
         } catch (error) {
             this.log(error.message, 'error');
             this.state.firmwareFiles = null;
@@ -150,6 +167,21 @@ const App = {
             return;
         }
 
+        // Validate custom offsets if advanced mode is enabled
+        if (this.state.advancedMode && Object.keys(this.state.customOffsets).length > 0) {
+            let hasErrors = false;
+            for (const [filename, offset] of Object.entries(this.state.customOffsets)) {
+                const validation = this.validateOffset(filename, `0x${offset.toString(16)}`);
+                if (!validation.isValid) {
+                    this.log(`Invalid custom offset for ${filename}: ${validation.message}`, 'error');
+                    hasErrors = true;
+                }
+            }
+            if (hasErrors) {
+                return;
+            }
+        }
+
         try {
             this.state.flashing = true;
             this.updateUI();
@@ -159,8 +191,17 @@ const App = {
 
             this.log('Preparing firmware files...', 'info');
 
-            // Prepare files for flashing
-            const preparedFiles = FileHandler.prepareFirmwareFiles(this.state.firmwareFiles);
+            // Prepare files for flashing (with or without custom offsets)
+            let preparedFiles;
+            if (this.state.advancedMode && Object.keys(this.state.customOffsets).length > 0) {
+                preparedFiles = FileHandler.prepareFirmwareFilesWithCustomOffsets(
+                    this.state.firmwareFiles,
+                    this.state.customOffsets
+                );
+                this.log('Using custom flash offsets', 'info');
+            } else {
+                preparedFiles = FileHandler.prepareFirmwareFiles(this.state.firmwareFiles);
+            }
 
             this.log(`Prepared ${preparedFiles.length} file(s) for flashing`, 'info');
 
@@ -215,6 +256,193 @@ const App = {
         line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
         this.elements.console.appendChild(line);
         this.elements.console.scrollTop = this.elements.console.scrollHeight;
+    },
+
+    // Handle advanced mode toggle
+    onAdvancedModeToggle(e) {
+        this.state.advancedMode = e.target.checked;
+
+        if (this.state.advancedMode) {
+            this.elements.offsetEditorPanel.classList.add('visible');
+            this.renderOffsetTable();
+        } else {
+            this.elements.offsetEditorPanel.classList.remove('visible');
+        }
+    },
+
+    // Render offset table
+    renderOffsetTable() {
+        const container = this.elements.offsetTableContainer;
+
+        // No files loaded state
+        if (!this.state.firmwareFiles || Object.keys(this.state.firmwareFiles).length === 0) {
+            container.innerHTML = '<div class="no-files-message">No firmware files loaded. Upload a firmware zip file first.</div>';
+            return;
+        }
+
+        // Generate table HTML
+        let tableHTML = `
+            <table class="offset-table">
+                <thead>
+                    <tr>
+                        <th>Filename</th>
+                        <th>Auto-Detected</th>
+                        <th>Custom Offset</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        for (const [filename, data] of Object.entries(this.state.firmwareFiles)) {
+            const autoOffset = FileHandler.getFlashOffset(filename);
+            const customOffset = this.state.customOffsets[filename];
+            const displayValue = customOffset !== undefined ? `0x${customOffset.toString(16).toUpperCase()}` : '';
+
+            tableHTML += `
+                <tr>
+                    <td>${filename}</td>
+                    <td>0x${autoOffset.toString(16).toUpperCase()}</td>
+                    <td>
+                        <input
+                            type="text"
+                            class="offset-input"
+                            data-filename="${filename}"
+                            value="${displayValue}"
+                            placeholder="0x${autoOffset.toString(16).toUpperCase()}"
+                        />
+                        <div class="validation-message" data-filename="${filename}"></div>
+                    </td>
+                    <td>
+                        <button class="button secondary reset-btn" data-filename="${filename}">Reset</button>
+                    </td>
+                </tr>
+            `;
+        }
+
+        tableHTML += `
+                </tbody>
+            </table>
+        `;
+
+        container.innerHTML = tableHTML;
+
+        // Attach event listeners to inputs and reset buttons
+        container.querySelectorAll('.offset-input').forEach(input => {
+            input.addEventListener('input', (e) => this.onOffsetInput(e));
+            input.addEventListener('blur', (e) => this.onOffsetBlur(e));
+        });
+
+        container.querySelectorAll('.reset-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => this.onResetOffset(e));
+        });
+    },
+
+    // Validate offset value
+    validateOffset(filename, value) {
+        // Empty value is valid (uses auto-detect)
+        if (!value || value.trim() === '') {
+            return { isValid: true, type: 'none', message: '' };
+        }
+
+        // Check format (must be hex with 0x prefix)
+        const hexPattern = /^0x[0-9A-Fa-f]+$/;
+        if (!hexPattern.test(value)) {
+            return {
+                isValid: false,
+                type: 'error',
+                message: 'Invalid format. Use hex with 0x prefix (e.g., 0x10000)'
+            };
+        }
+
+        // Parse value
+        const offset = parseInt(value, 16);
+
+        // Check range (0x0 to 0x400000 = 4MB)
+        if (offset < 0x0 || offset > 0x400000) {
+            return {
+                isValid: false,
+                type: 'error',
+                message: 'Offset out of range (0x0 to 0x400000)'
+            };
+        }
+
+        // Check for duplicates
+        for (const [fn, customOffset] of Object.entries(this.state.customOffsets)) {
+            if (fn !== filename && customOffset === offset) {
+                return {
+                    isValid: false,
+                    type: 'error',
+                    message: `Duplicate offset (conflicts with ${fn})`
+                };
+            }
+        }
+
+        // Check alignment (warn if not 0x1000 aligned)
+        if (offset % 0x1000 !== 0) {
+            return {
+                isValid: true,
+                type: 'warning',
+                message: 'Warning: Not aligned to 4KB sector (0x1000)'
+            };
+        }
+
+        return { isValid: true, type: 'success', message: '' };
+    },
+
+    // Handle offset input (real-time validation)
+    onOffsetInput(e) {
+        const input = e.target;
+        const filename = input.dataset.filename;
+        const value = input.value.trim();
+        const validation = this.validateOffset(filename, value);
+
+        // Update input styling
+        input.classList.remove('valid', 'error', 'warning');
+        if (validation.type === 'success') {
+            input.classList.add('valid');
+        } else if (validation.type === 'error') {
+            input.classList.add('error');
+        } else if (validation.type === 'warning') {
+            input.classList.add('warning');
+        }
+
+        // Update validation message
+        const messageEl = document.querySelector(`.validation-message[data-filename="${filename}"]`);
+        if (messageEl) {
+            messageEl.textContent = validation.message;
+            messageEl.className = `validation-message ${validation.type}`;
+        }
+    },
+
+    // Handle offset blur (commit value)
+    onOffsetBlur(e) {
+        const input = e.target;
+        const filename = input.dataset.filename;
+        const value = input.value.trim();
+        const validation = this.validateOffset(filename, value);
+
+        if (value === '') {
+            // Clear custom offset
+            delete this.state.customOffsets[filename];
+        } else if (validation.isValid) {
+            // Commit valid value
+            const offset = parseInt(value, 16);
+            this.state.customOffsets[filename] = offset;
+        }
+    },
+
+    // Handle reset offset button
+    onResetOffset(e) {
+        const filename = e.target.dataset.filename;
+        delete this.state.customOffsets[filename];
+        this.renderOffsetTable();
+    },
+
+    // Handle reset all offsets button
+    onResetAllOffsets() {
+        this.state.customOffsets = {};
+        this.renderOffsetTable();
     }
 };
 

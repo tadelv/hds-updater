@@ -131,5 +131,29 @@ const FileHandler = {
         prepared.sort((a, b) => a.offset - b.offset);
 
         return prepared;
+    },
+
+    /**
+     * Prepare firmware files for flashing with custom offsets
+     * @param {Object} files - Object containing firmware files {filename: ArrayBuffer}
+     * @param {Object} customOffsets - Object containing custom offsets {filename: offset}
+     * @returns {Array} Array of {filename, offset, data} objects sorted by offset
+     */
+    prepareFirmwareFilesWithCustomOffsets(files, customOffsets) {
+        const prepared = [];
+
+        for (const [filename, data] of Object.entries(files)) {
+            // Use custom offset if available, otherwise auto-detect
+            const offset = customOffsets[filename] !== undefined ?
+                customOffsets[filename] :
+                this.getFlashOffset(filename);
+
+            prepared.push({ filename, offset, data });
+        }
+
+        // Sort by offset (bootloader first)
+        prepared.sort((a, b) => a.offset - b.offset);
+
+        return prepared;
     }
 };
